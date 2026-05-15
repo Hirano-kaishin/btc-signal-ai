@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0f">
+<title>BTCシグナルAI / 1円を 5億円にする企画</title>
+<meta name="description" content="TikTok @sukiuriyarou の「1円を5億円にする」企画で使うBTC/JPY のAIシグナルツール。">
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+
+<div class="container">
+
+  <div class="hero">
+    <div class="hero-title">BTCシグナルAI</div>
+    <div class="hero-balance" id="balance">¥—</div>
+    <div class="hero-sub" id="balance-sub">現在残高</div>
+  </div>
+
+  <div class="progress-card">
+    <div class="progress-head">
+      <span>5億円まで</span>
+      <span id="progress-pct">—</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+    <div class="progress-foot" id="progress-remain">—</div>
+  </div>
+
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">AI的中率</div>
+      <div class="stat-value" id="hit-rate">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">本日シグナル</div>
+      <div class="stat-value" id="signal-count">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">経過日数</div>
+      <div class="stat-value" id="days">—</div>
+    </div>
+  </div>
+
+  <div class="landing-rules">
+    <h2>企画のルール</h2>
+    <ol>
+      <li>元手は10万円</li>
+      <li>1日の最大損失は5%まで</li>
+      <li>AIが確度70%以上のときだけエントリー候補</li>
+      <li>売買判断は必ず人間、AIは提案のみ</li>
+      <li>全トレードを動画で記録、勝敗を隠さない</li>
+    </ol>
+  </div>
+
+  <div class="section-title">最近のシグナル</div>
+  <div class="list" id="signal-preview">
+    <div class="list-row head">
+      <span>時刻</span><span>方向</span><span>根拠</span><span style="text-align:right;">確度</span>
+    </div>
+    <div id="signal-list"></div>
+  </div>
+
+  <div class="landing-cta">
+    <a href="https://www.tiktok.com/@sukiuriyarou" target="_blank" rel="noopener">TikTokで進捗を見る</a>
+  </div>
+
+  <div class="footer">BTCシグナルAI / @sukiuriyarou / 1円を5億円チャレンジ</div>
+
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import { getFirestore, collection, query, orderBy, limit, getDocs, where, Timestamp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+import { firebaseConfig } from "./assets/firebase-config.js";
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const $ = (id) => document.getElementById(id);
+
+const GOAL_JPY = 500000000;
+const START_DATE = new Date("2026-05-15");
+const fmt = (n) => "¥" + Math.round(n).toLocaleString();
+
+function actionLabel(a) {
+  if (a === "buy") return "買い";
+  if (a === "sell") return "売り";
+  return "様子見";
+}
+
+async function loadPerf() {
+  const q = query(collection(db, "performance"), orderBy("date", "desc"), limit(7));
+  const snap = await getDocs(q);
+  const docs = snap.docs.map(d => d.data());
+  let bal = 100000;
+  if (docs.length > 0) bal = docs[0].balance_jpy ?? 100000;
+  $("balance").textContent = fmt(bal);
+  const pct = (bal / GOAL_JPY) * 100;
+  $("progress-pct").textContent = pct.toFixed(4) + "% 達成";
+  $("progress-fill").style.width = Math.min(pct, 100) + "%";
+  $("progress-remain").textContent = "残り " + fmt(GOAL_JPY - bal);
+  let hits = 0, total = 0;
+  docs.forEach(d => {
+    total += (d.signal_count ?? 0);
+    hits += Math.round((d.signal_hit_rate ?? 0) * (d.signal_count ?? 0) / 100);
+  });
+  $("hit-rate").textContent = total > 0 ? Math.round((hits / total) * 100) + "%" : "—";
+  const days = Math.max(1, Math.ceil((Date.now() - START_DATE) / 86400000));
+  $("days").textContent = days + "日目";
+}
+
+async function loadSignals() {
+  const startOfDay = new Date();
+  startOfDay.setHours(0,0,0,0);
+  try {
+    const q = query(
+      collection(db, "signals"),
+      where("timestamp", ">=", Timestamp.fromDate(startOfDay)),
+      orderBy("timestamp", "desc"),
+      limit(10)
+    );
+    const snap = await getDocs(q);
+    const docs = snap.docs.map(d => d.data());
+    $("signal-count").textContent = docs.length + "件";
+    const html = docs.slice(0, 6).map(s => {
+      const t = s.timestamp?.toDate?.() ?? new Date();
+      const time = t.getHours().toString().padStart(2,"0") + ":" + t.getMinutes().toString().padStart(2,"0");
+      const dir = s.action || "wait";
+      return `<div class="list-row">
+        <span class="list-time">${time}</span>
+        <span class="list-dir ${dir}">${actionLabel(dir)}</span>
+        <span class="list-reason">${(s.reasoning || "").slice(0, 40)}</span>
+        <span class="list-conf">${s.confidence ?? 0}</span>
+      </div>`;
+    }).join("");
+    $("signal-list").innerHTML = html || `<div class="list-row"><span class="list-reason" style="grid-column:1/-1;text-align:center;color:var(--text-muted);">本日のシグナルはまだありません</span></div>`;
+  } catch (e) {
+    console.error(e);
+    $("signal-count").textContent = "—";
+  }
+}
+
+loadPerf();
+loadSignals();
+</script>
+</body>
+</html>
