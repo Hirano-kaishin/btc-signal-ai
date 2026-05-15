@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0f">
+<meta name="robots" content="noindex,nofollow">
+<title>管理画面 ・ BTCシグナルAI</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+
+<div id="login-screen" class="login" style="display:none;">
+  <h1>管理画面ログイン</h1>
+  <input type="email" id="email" placeholder="メールアドレス" autocomplete="email">
+  <input type="password" id="password" placeholder="パスワード" autocomplete="current-password">
+  <button id="login-btn">ログイン</button>
+  <div class="login-err" id="login-err"></div>
+</div>
+
+<div id="admin-screen" class="container" style="display:none;">
+
+  <div class="hero">
+    <div class="hero-title">BTCシグナルAI</div>
+    <div class="hero-balance" id="balance">¥—</div>
+    <div class="hero-sub"><span id="pnl-today">本日損益—</span></div>
+  </div>
+
+  <div class="progress-card">
+    <div class="progress-head">
+      <span>5億円まで</span>
+      <span id="progress-pct">—</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+    <div class="progress-foot" id="progress-remain">—</div>
+  </div>
+
+  <div class="stat-row">
+    <div class="stat">
+      <div class="stat-label">AI的中率 7日</div>
+      <div class="stat-value" id="hit-rate">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">本日シグナル</div>
+      <div class="stat-value" id="signal-count">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">取引回数</div>
+      <div class="stat-value" id="trade-count">—</div>
+    </div>
+  </div>
+
+  <div class="section-title">最新シグナル</div>
+  <div class="signal" id="latest-signal">
+    <div class="signal-head">
+      <span id="latest-time">—</span>
+      <span class="signal-conf" id="latest-conf">—</span>
+    </div>
+    <div class="signal-main">
+      <span class="signal-action wait" id="latest-action">データ読み込み中</span>
+      <span class="signal-price" id="latest-price"></span>
+    </div>
+    <div class="signal-reason" id="latest-reason">AIの分析結果を待っています。</div>
+  </div>
+
+  <div class="section-title">本日のシグナル履歴</div>
+  <div class="list">
+    <div class="list-row head">
+      <span>時刻</span><span>方向</span><span>根拠</span><span style="text-align:right;">確度</span>
+    </div>
+    <div id="signal-list"></div>
+  </div>
+
+  <div class="footer">BTCシグナルAI / 1円を5億円チャレンジ</div>
+
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+import { getFirestore, collection, query, orderBy, limit, onSnapshot, doc, getDoc, where, Timestamp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+import { firebaseConfig } from "./assets/firebase-config.js";
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const $ = (id) => document.getElementById(id);
+
+// ---- Auth ----
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    $("login-screen").style.display = "none";
+    $("admin-screen").style.display = "";
+    bootAdmin();
+  } else {
+    $("login-screen").style.display = "";
+    $("admin-screen").style.display = "none";
+  }
+});
+
+$("login-btn").addEventListener("click", async () => {
+  $("login-err").textContent = "";
+  try {
+    await signInWithEmailAndPassword(auth, $("email").value, $("password").value);
+  } catch (e) {
+    $("login-err").textContent = "ログイン失敗：" + (e.code || e.message);
+  }
+});
+$("password").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("login-btn").click();
+});
+
+// ---- Admin data ----
+const GOAL_JPY = 500000000;
+const fmt = (n) => "¥" + Math.round(n).toLocaleString();
+
+function bootAdmin() {
+  // Performance (latest daily)
+  const perfQ = query(collection(db, "performance"), orderBy("date", "desc"), limit(7));
+  onSnapshot(perfQ, (snap) => {
+    const docs = snap.docs.map(d => d.data());
+    if (docs.length === 0) {
+      $("balance").textContent = "¥100,000";
+      $("pnl-today").textContent = "本日損益 ±0";
+      updateProgress(100000);
+      return;
+    }
+    const today = docs[0];
+    const bal = today.balance_jpy ?? 100000;
+    $("balance").textContent = fmt(bal);
+    const pnl = today.total_pnl_jpy ?? 0;
+    const sign = pnl >= 0 ? "+" : "−";
+    $("pnl-today").textContent = "本日損益 " + sign + fmt(Math.abs(pnl)).replace("¥","¥");
+    $("trade-count").textContent = (today.trade_count ?? 0) + "回";
+    updateProgress(bal);
+    // Hit rate over 7 days
+    let hits = 0, total = 0;
+    docs.forEach(d => {
+      total += (d.signal_count ?? 0);
+      hits += Math.round((d.signal_hit_rate ?? 0) * (d.signal_count ?? 0) / 100);
+    });
+    const rate = total > 0 ? Math.round((hits / total) * 100) : 0;
+    $("hit-rate").textContent = rate + "%";
+  });
+
+  // Today's signals
+  const startOfDay = new Date();
+  startOfDay.setHours(0,0,0,0);
+  const sigQ = query(
+    collection(db, "signals"),
+    where("timestamp", ">=", Timestamp.fromDate(startOfDay)),
+    orderBy("timestamp", "desc")
+  );
+  onSnapshot(sigQ, (snap) => {
+    const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
+    $("signal-count").textContent = docs.length + "件";
+    if (docs.length > 0) {
+      renderLatest(docs[0]);
+      renderList(docs);
+    }
+  });
+}
+
+function updateProgress(bal) {
+  const pct = (bal / GOAL_JPY) * 100;
+  $("progress-pct").textContent = pct.toFixed(4) + "% 達成";
+  $("progress-fill").style.width = Math.min(pct, 100) + "%";
+  $("progress-remain").textContent = "残り " + fmt(GOAL_JPY - bal);
+}
+
+function actionLabel(a) {
+  if (a === "buy") return "買い";
+  if (a === "sell") return "売り";
+  return "様子見";
+}
+
+function renderLatest(s) {
+  const t = s.timestamp?.toDate?.() ?? new Date();
+  $("latest-time").textContent = "最新 / " + t.getHours().toString().padStart(2,"0") + ":" + t.getMinutes().toString().padStart(2,"0");
+  $("latest-conf").textContent = "確度 " + (s.confidence ?? 0) + "%";
+  $("latest-action").textContent = actionLabel(s.action);
+  $("latest-action").className = "signal-action " + (s.action || "wait");
+  $("latest-price").textContent = s.price_jpy ? "BTC " + fmt(s.price_jpy) : "";
+  $("latest-reason").textContent = s.reasoning || "(根拠なし)";
+}
+
+function renderList(docs) {
+  const html = docs.slice(0, 12).map(s => {
+    const t = s.timestamp?.toDate?.() ?? new Date();
+    const time = t.getHours().toString().padStart(2,"0") + ":" + t.getMinutes().toString().padStart(2,"0");
+    const dir = s.action || "wait";
+    return `<div class="list-row">
+      <span class="list-time">${time}</span>
+      <span class="list-dir ${dir}">${actionLabel(dir)}</span>
+      <span class="list-reason">${(s.reasoning || "").slice(0, 40)}</span>
+      <span class="list-conf">${s.confidence ?? 0}</span>
+    </div>`;
+  }).join("");
+  $("signal-list").innerHTML = html;
+}
+</script>
+</body>
+</html>
